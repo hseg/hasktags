@@ -24,7 +24,7 @@ import           Data.Char                  (isSpace)
 import           Data.String                (IsString(..))
 import           Data.List                  (isPrefixOf, isSuffixOf, groupBy,
                                              tails, nub)
-import           Data.Maybe                 (maybeToList)
+import           Data.Maybe                 (mapMaybe, maybeToList)
 import           DebugShow                  (trace_)
 import           System.Directory           (doesDirectoryExist, doesFileExist,
                                              getDirectoryContents,
@@ -149,6 +149,14 @@ isNewLine :: Maybe Int -> Token -> Bool
 isNewLine Nothing (NewLine _)   = True
 isNewLine (Just c) (NewLine c') = c == c'
 isNewLine _ _                   = False
+
+_TokenName :: Token -> Maybe String
+_TokenName (Token s _) = Just s
+_TokenName _           = Nothing
+
+_NewLine :: Maybe Int -> Token -> Maybe Int
+_NewLine m t@(NewLine i) | isNewLine m t = Just i
+_NewLine _ _                             = Nothing
 
 trimNewlines :: [Token] -> [Token]
 trimNewlines = filter (not . isNewLine Nothing)
@@ -417,7 +425,7 @@ findFuncTypeDefs found (t@(Token _ _): Token "::" _ : sig) scope =
 findFuncTypeDefs found xs@(Token "(" _ :_) scope =
           case break myBreakF xs of
             (inner@(Token _ p : _), rp : xs') ->
-              let merged = Token ( concatMap (\(Token x _) -> x) $ inner ++ [rp] ) p
+              let merged = Token ( concat . mapMaybe _TokenName $ inner ++ [rp] ) p
               in if any (isNewLine Nothing) inner
                    then []
                    else findFuncTypeDefs found (merged : xs') scope
@@ -433,8 +441,7 @@ fromWhereOn (_: xs@(NewLine _ : _)) scope =
              concatMap (flip findstuff scope . tail')
              $ splitByNL (Just ( minimum
                                 . (10000:)
-                                . map (\(NewLine i) -> i)
-                                . filter (isNewLine Nothing) $ xs)) xs
+                                . mapMaybe (_NewLine Nothing) $ xs)) xs
 fromWhereOn (_:xw) scope = findstuff xw scope
 
 findFunc :: [Token] -> Scope -> [FoundThing]
@@ -548,7 +555,7 @@ dirToFiles followSyms suffixes p = do
   where matchingSuffix = any (`isSuffixOf` p) suffixes
 
 concatTokens :: [Token] -> String
-concatTokens = smartUnwords . map (\(Token name _) -> name) .  filter (not . isNewLine Nothing)
+concatTokens = smartUnwords . mapMaybe _TokenName
   where smartUnwords [] = []
         smartUnwords a = foldr (\v -> (glueNext v ++)) "" $ a `zip` tail (a ++ [""])
         glueNext (a@("("), _) = a
