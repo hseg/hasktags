@@ -22,8 +22,9 @@ import qualified Data.ByteString.Char8 as BS (ByteString, readFile, unpack)
 import qualified Data.ByteString.UTF8  as BS8 (fromString)
 import           Data.Char                  (isSpace)
 import           Data.String                (IsString(..))
-import           Data.List                  (isPrefixOf, isSuffixOf, groupBy,
-                                             tails, nub)
+import           Data.List                  (findIndex, isPrefixOf, isSuffixOf,
+                                             groupBy, tails, nub, scanl',
+                                             unfoldr)
 import           Data.Maybe                 (mapMaybe, maybeToList)
 import           DebugShow                  (trace_)
 import           System.Directory           (doesDirectoryExist, doesFileExist,
@@ -566,24 +567,52 @@ concatTokens = smartUnwords . mapMaybe _TokenName
         glueNext (a, "")      = a
         glueNext (a, _)       = a ++ " "
 
+{- | 'splitDropWhen' @p xs@ splits @xs@ at those elements satisfying @p@,
+dropping those elements. Equivalently, it breaks @xs@ into contiguous
+segments of elements not satisfying @p@
+-}
+splitDropWhen :: (a -> Bool) -> [a] -> [[a]]
+splitDropWhen p = unfoldr $ \es ->
+  if null es
+    then Nothing
+    else Just (breakDrop p es)
+
+{- | 'breakDrop' @p xs@ returns a tuple whose first element is the longest
+prefix of @xs@ not satsifying @p@, and whose second element is the longest
+suffix of the remainder of @xs@ not starting with an element satisfying @p@.
+-}
+breakDrop :: (a -> Bool) -> [a] -> ([a], [a])
+breakDrop p xs =
+  let
+    (pre, t) = break p xs
+    (_, post) = break (not . p) t
+   in
+    (pre, post)
+
 commaSep :: [Token] -> [[Token]]
-commaSep = go True [] where
-  go _   acc [] = filter (not . null) $ reverse acc
-  go _   acc (Token "," _ : ts) = go True acc ts
-  go new acc (t : ts) = go False acc' ts
-    where
-    acc'
-      | new = [t] : acc
-      | a:as <- acc = (t:a) : as
-      | otherwise = [[t]]
+commaSep = filter (not . null) . splitDropWhen ((== ",") . tokenString)
 
 extractOperator :: [Token] -> ([String], [Token])
-extractOperator (Token "(" _ : ts) = (names, post)
-  where
-  (pre, _:post) = break ((== ")") . tokenString) ts
-  flatNames = foldr ((++) . tokenString) "" . filter (not . isNewLine Nothing)
-  names = case commaSep ts of
-    [only] -> ["(" ++ flatNames ts ++ ")"]
+extractOperator ts@(Token "(" _ : _) = (names, post)
+ where
+  -- The index of the closing parenthesis in a parenthesized set of nested parens
+  -- (detected as the paren making the nesting level =0)
+  parenSpan =
+    maybe 0 (+1)
+    . findIndex (==0) . drop 1 . scanl' (+) 0 . map nestingDelta
+   where
+      nestingDelta :: Token -> Int
+      nestingDelta (Token "(" _) = 1
+      nestingDelta (Token ")" _) = -1
+      nestingDelta _             = 0
+  -- by splitting just before the closing paren, we save having to rewalk the
+  -- string to deparenthesize the external parentheses
+  (pre, post) = both (drop 1) $ splitAt (parenSpan ts - 1) ts
+   where
+    both f (x, y) = (f x, f y)
+  flatNames = concat . mapMaybe _TokenName
+  names = case commaSep pre of
+    [only] -> ["(" ++ flatNames only ++ ")"]
     tss -> map flatNames tss
 -- impossible
 extractOperator _ = ([], [])
