@@ -17,14 +17,13 @@ module Hasktags (
   dirToFiles
 ) where
 import           Control.Monad              (when)
-import           Control.Arrow              ((***))
 import qualified Data.ByteString.Char8 as BS (ByteString, readFile, unpack)
 import qualified Data.ByteString.UTF8  as BS8 (fromString)
 import           Data.Char                  (isSpace)
 import           Data.String                (IsString(..))
 import           Data.List                  (findIndex, isPrefixOf, isSuffixOf,
-                                             groupBy, tails, nub, scanl',
-                                             unfoldr)
+                                             tails, nub, scanl', unfoldr)
+import qualified Data.List.NonEmpty as NE
 import           Data.Maybe                 (mapMaybe, maybeToList)
 import           DebugShow                  (trace_)
 import           System.Directory           (doesDirectoryExist, doesFileExist,
@@ -224,8 +223,7 @@ findThingsInBS filename bs = do
         let aslines = lines $ BS.unpack bs
 
         let stripNonHaskellLines = let
-                  emptyLine = all (all isSpace . tokenString)
-                            . filter (not . isNewLine Nothing)
+                  emptyLine = all (all isSpace . tokenString) . trimNewlines
                   cppLine (_nl:t:_) = ("#" `isPrefixOf`) $ tokenString t
                   cppLine _         = False
                 in filter (not . emptyLine) . filter (not . cppLine)
@@ -267,27 +265,27 @@ findThingsInBS filename bs = do
         --     z = 20
         -- won't be found as function
         let topLevelIndent = debugStep "top level indent" $ getTopLevelIndent isLiterate tokenLines
-        let sections = map tail -- strip leading NL (no longer needed)
+        let sections = map (drop 1) -- strip leading NL (no longer needed)
                        $ filter (not . null)
                        $ splitByNL (Just topLevelIndent )
                        $ concat (trace_ "tokenLines" tokenLines tokenLines)
         -- only take one of
         -- a 'x' = 7
         -- a _ = 0
-        let filterAdjacentFuncImpl = map head . groupBy (\(FoundThing t1 n1 (Pos f1 _ _ _))
-                                                          (FoundThing t2 n2 (Pos f2 _ _ _))
-                                                          -> f1 == f2
-                                                            && n1 == n2
-                                                            && areFuncImpls t1 t2)
+        let filterAdjacentFuncImpl = map NE.head . NE.groupBy (
+              \(FoundThing t1 n1 (Pos f1 _ _ _))
+               (FoundThing t2 n2 (Pos f2 _ _ _))
+               -> f1 == f2 && n1 == n2 && areFuncImpls t1 t2)
             areFuncImpls (FTFuncImpl _) (FTFuncImpl _) = True
             areFuncImpls _ _                           = False
 
-        let iCI = map head . groupBy (\(FoundThing t1 n1 (Pos f1 l1 _ _))
-                                       (FoundThing t2 n2 (Pos f2 l2 _ _))
-                                       -> f1 == f2
-                                         && n1 == n2
-                                         && skipCons t1 t2
-                                         && ((<= 7) $ abs $ l2 - l1))
+        let iCI = map NE.head . NE.groupBy (
+                \(FoundThing t1 n1 (Pos f1 l1 _ _))
+                 (FoundThing t2 n2 (Pos f2 l2 _ _))
+                 -> f1 == f2
+                    && n1 == n2
+                    && skipCons t1 t2
+                    && ((<= 7) $ abs $ l2 - l1))
             skipCons FTData (FTCons _ _)       = False
             skipCons FTDataGADT (FTConsGADT _) = False
             skipCons _ _                       = True
@@ -421,8 +419,9 @@ findstuff xs scope =
 findFuncTypeDefs :: [Token] -> [Token] -> Scope -> [FoundThing]
 findFuncTypeDefs found (t@(Token _ _): Token "," _ :xs) scope =
           findFuncTypeDefs (t : found) xs scope
-findFuncTypeDefs found (t@(Token _ _): Token "::" _ : sig) scope =
-          map (\(Token name p) -> FoundThing (FTFuncTypeDef (concatTokens sig) scope) name p) (t:found)
+findFuncTypeDefs found (t@(Token _ _): Token "::" _ : sig) scope = [
+          FoundThing (FTFuncTypeDef (concatTokens sig) scope) name p
+          | Token name p <- (t:found)]
 findFuncTypeDefs found xs@(Token "(" _ :_) scope =
           case break myBreakF xs of
             (inner@(Token _ p : _), rp : xs') ->
@@ -505,9 +504,8 @@ splitByNL _ _ = []
 getTopLevelIndent :: Bool -> [[Token]] -> Int
 getTopLevelIndent _ [] = 0 -- (no import found, assuming indent 0: this can be
                            -- done better but should suffice for most needs
-getTopLevelIndent isLiterate ((nl:next:_):xs) = if "import" == tokenString next
-                          then let (NewLine i) = nl in i
-                          else getTopLevelIndent isLiterate xs
+getTopLevelIndent _ ((nl:next:_):_) |
+  "import" == tokenString next, (NewLine i) <- nl = i
 getTopLevelIndent isLiterate (_:xs) = getTopLevelIndent isLiterate xs
 
 -- According to http://www.haskell.org/onlinereport/literate.html either
@@ -550,7 +548,7 @@ dirToFiles followSyms suffixes p = do
         then return []
         else do
           -- filter . .. and hidden files .*
-          contents <- filter ((/=) '.' . head) `fmap` getDirectoryContents p
+          contents <- filter (not . isPrefixOf ".") `fmap` getDirectoryContents p
           concat `fmap` mapM (dirToFiles followSyms suffixes . (</>) p) contents
     else return [p | matchingSuffix ]
   where matchingSuffix = any (`isSuffixOf` p) suffixes
@@ -558,7 +556,7 @@ dirToFiles followSyms suffixes p = do
 concatTokens :: [Token] -> String
 concatTokens = smartUnwords . mapMaybe _TokenName
   where smartUnwords [] = []
-        smartUnwords a = foldr (\v -> (glueNext v ++)) "" $ a `zip` tail (a ++ [""])
+        smartUnwords a = foldr (\v -> (glueNext v ++)) "" $ a `zip` drop 1 (a ++ [""])
         glueNext (a@("("), _) = a
         glueNext (a, ")")     = a
         glueNext (a@("["), _) = a

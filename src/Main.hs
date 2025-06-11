@@ -5,7 +5,6 @@ module Main (main) where
 import Hasktags
 
 import Control.Monad (unless)
-import Data.Monoid
 import Data.Set (Set, notMember, fromList, union)
 import Data.Version (showVersion)
 import Options.Applicative
